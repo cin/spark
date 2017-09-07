@@ -116,6 +116,12 @@ private[spark] object CoarseGrainedClusterMessages {
 
   case class KillExecutors(executorIds: Seq[String]) extends CoarseGrainedClusterMessage
 
+  case class PreemptExecutors(
+      forcedToLeave: Set[String],
+      askedToLeave: Set[String],
+      numRequestedContainers: Int)
+    extends CoarseGrainedClusterMessage
+
   // Used internally by executors to shut themselves down.
   case object Shutdown extends CoarseGrainedClusterMessage
 

@@ -27,6 +27,7 @@ import scala.collection.mutable
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, Queue}
 import scala.util.control.NonFatal
 
+import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse
 import org.apache.hadoop.yarn.api.records._
 import org.apache.hadoop.yarn.client.api.AMRMClient
 import org.apache.hadoop.yarn.client.api.AMRMClient.ContainerRequest
@@ -39,8 +40,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config._
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef}
 import org.apache.spark.scheduler.{ExecutorExited, ExecutorLossReason}
-import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages.RemoveExecutor
-import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages.RetrieveLastAllocatedExecutorId
+import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.util.{Clock, SystemClock, ThreadUtils}
 
 /**
@@ -287,6 +287,8 @@ private[yarn] class YarnAllocator(
       logDebug("Finished processing %d completed containers. Current running executor count: %d."
         .format(completedContainers.size, numExecutorsRunning.get))
     }
+
+    handlePreemptionMessage(allocateResponse)
   }
 
   /**
@@ -451,6 +453,64 @@ private[yarn] class YarnAllocator(
 
     logInfo("Received %d containers from YARN, launching executors on %d of them."
       .format(allocatedContainers.size, containersToUse.size))
+  }
+
+  /**
+   * Correlate the PreemptionContract's containers with executors and calculate the number of
+   * containers the resource request is asking to be preempted.
+   */
+  private[yarn] def getAskedPreemptedExecutors(
+      contract: PreemptionContract): (Set[String], Int) = {
+    val containers = contract.getContainers.asScala.toSet
+    val askedToLeave = containers.flatMap { c => containerIdToExecutorId.get(c.getId) }
+
+    // since all executors share to same memory and cores settings,
+    // only the number of containers matters
+    val numRequestedPreempted = contract.getResourceRequest.asScala.foldLeft(0) { case (acc, r) =>
+      acc + r.getResourceRequest.getNumContainers
+    }
+
+    logInfo(s"$askedToLeave requested to be preempted. " +
+      s"numRequestedPreempted: $numRequestedPreempted")
+    (askedToLeave, numRequestedPreempted)
+  }
+
+  /**
+   * Correlate the StrictPreemptionContract's containers with executors.
+   *
+   * NOTE: Add checkpoint configuration option?
+   */
+  private[yarn] def getForcefullyPreemptedExecutors(
+      contract: StrictPreemptionContract): Set[String] = {
+    val containers = contract.getContainers.asScala.toSet
+    val forcedToLeave = containers.flatMap { c => containerIdToExecutorId.get(c.getId) }
+    logInfo(s"$forcedToLeave are being forcefully preempted.")
+    forcedToLeave
+  }
+
+  /**
+   * Handle YARN's preemption message. Send a message over to the driver so containers can be
+   * gracefully preempted.
+   *
+   * NOTE: Should the case where the forceToLeave size is not equal to the number of
+   * containers present in the StrictPreemptionContract? This shouldn't happen but could
+   * increment the numRequestedPreempted count to force another container to be preempted
+   */
+  private def handlePreemptionMessage(allocateResponse: AllocateResponse): Unit = {
+    Option(allocateResponse.getPreemptionMessage).foreach { preemptionMessage =>
+      val (askedToLeave, numRequestedPreempted): (Set[String], Int) =
+        Option(preemptionMessage.getContract)
+          .map(getAskedPreemptedExecutors)
+          .getOrElse((Set.empty, 0))
+
+      val forcedToLeave = Option(preemptionMessage.getStrictContract)
+        .map(getForcefullyPreemptedExecutors)
+        .getOrElse(Set.empty)
+
+      if (numRequestedPreempted > 0 || askedToLeave.nonEmpty || forcedToLeave.nonEmpty) {
+        driverRef.send(PreemptExecutors(forcedToLeave, askedToLeave, numRequestedPreempted))
+      }
+    }
   }
 
   /**
