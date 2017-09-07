@@ -27,6 +27,7 @@ import scala.collection.mutable
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, Queue}
 import scala.util.control.NonFatal
 
+import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse
 import org.apache.hadoop.yarn.api.records._
 import org.apache.hadoop.yarn.client.api.AMRMClient
 import org.apache.hadoop.yarn.client.api.AMRMClient.ContainerRequest
@@ -39,8 +40,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config._
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef}
 import org.apache.spark.scheduler.{ExecutorExited, ExecutorLossReason}
-import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages.RemoveExecutor
-import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages.RetrieveLastAllocatedExecutorId
+import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.util.{Clock, SystemClock, ThreadUtils}
 
 /**
@@ -287,6 +287,8 @@ private[yarn] class YarnAllocator(
       logDebug("Finished processing %d completed containers. Current running executor count: %d."
         .format(completedContainers.size, numExecutorsRunning.get))
     }
+
+    handlePreemptionMessage(allocateResponse)
   }
 
   /**
@@ -451,6 +453,39 @@ private[yarn] class YarnAllocator(
 
     logInfo("Received %d containers from YARN, launching executors on %d of them."
       .format(allocatedContainers.size, containersToUse.size))
+  }
+
+  /**
+   * Handle YARN's preemption message. Send a message over to the driver so containers can be
+   * gracefully preempted.
+   */
+  private def handlePreemptionMessage(allocateResponse: AllocateResponse): Unit = {
+    Option(allocateResponse.getPreemptionMessage).foreach { preemptionMessage =>
+      val forcedToLeave = Option(preemptionMessage.getStrictContract).map { contract =>
+        val forcedPreempt = contract.getContainers.asScala.toSet
+        val forcedToLeave = forcedPreempt.flatMap { c => containerIdToExecutorId.get(c.getId) }
+        logInfo(s"$forcedToLeave are getting preempted. Add checkpoint configuration option?")
+        forcedToLeave
+      }.getOrElse(Set.empty)
+
+      val (askedToLeave, numRequestedPreempted): (Set[String], Int) =
+        Option(preemptionMessage.getContract).map { contract =>
+          val askedPreempt = contract.getContainers.asScala.toSet
+          val askedToLeave = askedPreempt.flatMap { c => containerIdToExecutorId.get(c.getId) }
+          val rrs = contract.getResourceRequest.asScala
+          val numRequestedPreempted = rrs.foldLeft(0) { case (acc, r) =>
+            val rr = r.getResourceRequest
+            logInfo(s"$rr")
+            acc + rr.getNumContainers
+          }
+          logInfo(s"$askedToLeave requested to be preempted. # resource requests: ${rrs.length}")
+          (askedToLeave, numRequestedPreempted)
+        }.getOrElse((Set.empty, 0))
+
+      if (numRequestedPreempted > 0 || askedToLeave.nonEmpty || forcedToLeave.nonEmpty) {
+        driverRef.send(PreemptExecutors(forcedToLeave, askedToLeave, numRequestedPreempted))
+      }
+    }
   }
 
   /**

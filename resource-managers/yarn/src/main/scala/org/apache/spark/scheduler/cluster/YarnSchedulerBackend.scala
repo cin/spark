@@ -17,9 +17,9 @@
 
 package org.apache.spark.scheduler.cluster
 
-import java.util.concurrent.atomic.{AtomicBoolean}
+import java.util.concurrent.atomic.AtomicBoolean
 
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 import scala.util.control.NonFatal
 
@@ -271,6 +271,8 @@ private[spark] abstract class YarnSchedulerBackend(
             logError("Error requesting driver to remove executor" +
               s" $executorId for reason $reason", e)
         }(ThreadUtils.sameThread)
+
+      case ypm: PreemptExecutors => sc.executorAllocationManager.foreach(_.preemptExecutors(ypm))
     }
 
 
