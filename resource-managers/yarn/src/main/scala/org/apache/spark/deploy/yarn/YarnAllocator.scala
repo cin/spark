@@ -493,8 +493,9 @@ private[yarn] class YarnAllocator(
    * gracefully preempted.
    *
    * NOTE: Should the case where the forceToLeave size is not equal to the number of
-   * containers present in the StrictPreemptionContract? This shouldn't happen but could
-   * increment the numRequestedPreempted count to force another container to be preempted
+   * containers present in the StrictPreemptionContract? This shouldn't happen but it's
+   * possible to increment the numRequestedPreempted count to force another container
+   * to be preempted.
    */
   private def handlePreemptionMessage(allocateResponse: AllocateResponse): Unit = {
     Option(allocateResponse.getPreemptionMessage).foreach { preemptionMessage =>
