@@ -67,8 +67,8 @@ class PreemptionPolicySuite extends SparkFunSuite
     val rmex = scala.util.Random.shuffle(eam.executorIds).take(numExecs).toSet
     val pe = PreemptExecutors(rmex, Set.empty, 0)
     eam.preemptExecutors(pe)
-    eam.preemptableExecutors should have size numExecs
-    eam.preemptableExecutors.foreach { pe =>
+    eam.executorsToPreempt should have size numExecs
+    eam.executorsToPreempt.foreach { pe =>
       rmex should contain (pe)
     }
   }
@@ -81,8 +81,8 @@ class PreemptionPolicySuite extends SparkFunSuite
     val rmex = scala.util.Random.shuffle(eam.executorIds).take(numExecs).toSet
     val pe = PreemptExecutors(Set.empty, rmex, numExecs)
     eam.preemptExecutors(pe)
-    eam.preemptableExecutors should have size numExecs
-    eam.preemptableExecutors.foreach { pe =>
+    eam.executorsToPreempt should have size numExecs
+    eam.executorsToPreempt.foreach { pe =>
       rmex should contain (pe)
     }
   }
@@ -97,9 +97,9 @@ class PreemptionPolicySuite extends SparkFunSuite
     val rmex = scala.util.Random.shuffle(eam.executorIds).take(numExecs).toSet
     val pe = PreemptExecutors(Set.empty, rmex, 2)
     eam.preemptExecutors(pe)
-    eam.preemptableExecutors should have size 2
-    eam.preemptableExecutors should contain (head)
-    eam.preemptableExecutors should contain (rmex.head)
+    eam.executorsToPreempt should have size 2
+    eam.executorsToPreempt should contain (head)
+    eam.executorsToPreempt should contain (rmex.head)
   }
 
   test("preemption selection with no asked removal and idle execs") {
@@ -115,8 +115,8 @@ class PreemptionPolicySuite extends SparkFunSuite
 
     val pe = PreemptExecutors(Set.empty, Set.empty, numExecs)
     eam.preemptExecutors(pe)
-    eam.preemptableExecutors should have size numExecs
-    eam.preemptableExecutors.foreach { eid =>
+    eam.executorsToPreempt should have size numExecs
+    eam.executorsToPreempt.foreach { eid =>
       idleExecs should contain (eid)
     }
   }

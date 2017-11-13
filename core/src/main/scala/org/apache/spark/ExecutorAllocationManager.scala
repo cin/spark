@@ -158,9 +158,12 @@ private[spark] class ExecutorAllocationManager(
   val executorAllocationManagerSource = new ExecutorAllocationManagerSource
 
   // Preemption policy state
-  private[spark] val preemptableExecutors = new mutable.HashSet[String]
+  // TODO: add a more descriptive message here
+  // be specific about access synchronization issues too
+  // access guarding
+  private[spark] val executorsToPreempt = new mutable.HashSet[String]
   private val policy = PreemptionPolicy
-    .mkPolicy(conf, executorIds, removeTimes, preemptableExecutors)
+    .mkPolicy(conf, executorIds, removeTimes, executorsToPreempt)
 
   // Whether we are still waiting for the initial set of executors to be allocated.
   // While this is true, we will not cancel outstanding executor requests. This is
@@ -262,7 +265,7 @@ private[spark] class ExecutorAllocationManager(
     numExecutorsTarget = initialNumExecutors
     executorsPendingToRemove.clear()
     removeTimes.clear()
-    preemptableExecutors.clear()
+    executorsToPreempt.clear()
   }
 
   /**
@@ -292,9 +295,10 @@ private[spark] class ExecutorAllocationManager(
 
     updateAndSyncNumExecutorsTarget(now)
 
-    if (preemptableExecutors.nonEmpty) {
-      removeExecutors(preemptableExecutors.toSeq, forceKill = true)
-      preemptableExecutors.clear()
+    // TODO: abstract this within the policy
+    if (executorsToPreempt.nonEmpty) {
+      removeExecutors(executorsToPreempt.toSeq, forceKill = true)
+      executorsToPreempt.clear()
     }
 
     val executorIdsToBeRemoved = ArrayBuffer[String]()
@@ -611,6 +615,7 @@ private[spark] class ExecutorAllocationManager(
     removeTimes.remove(executorId)
   }
 
+  // TODO: add scaladoc
   def preemptExecutors(pe: PreemptExecutors): Unit = synchronized {
     policy.preemptExecutors(pe)
   }
