@@ -615,7 +615,15 @@ private[spark] class ExecutorAllocationManager(
     removeTimes.remove(executorId)
   }
 
-  // TODO: add scaladoc
+  /**
+   * Callback invoked by the scheduler backend when a preemption message is received.
+   * This is currently only used by the YarnBackendScheduler, but other resource managers
+   * could take advantage of this in the future.
+   *
+   * Note that this method is synchronized as the policy may mutate [[executorsToPreempt]].
+   *
+   * @param pe PreemptExecutors message
+   */
   def preemptExecutors(pe: PreemptExecutors): Unit = synchronized {
     policy.preemptExecutors(pe)
   }

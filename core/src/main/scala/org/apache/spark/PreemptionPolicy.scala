@@ -57,14 +57,14 @@ object PreemptionPolicy {
  *
  * @param executorIds mutable collection of executorIds (not mutated by default)
  * @param removeTimes EAM's idle executor -> expiration map (not mutated by default)
- * @param preemptedExecutors mutable collection of executors to be preempted on the next
+ * @param executorsToPreempt mutable collection of executors to be preempted on the next
  *                           EAM update. preemptExecutors adds to this set, but EAM acts
  *                           on and clears the set
  */
 abstract class PreemptionPolicy(
     executorIds: mutable.HashSet[String],
     removeTimes: mutable.HashMap[String, Long],
-    preemptedExecutors: mutable.HashSet[String]) {
+    executorsToPreempt: mutable.HashSet[String]) {
   def preemptExecutors(pe: PreemptExecutors): Unit
 }
 
@@ -72,50 +72,37 @@ abstract class PreemptionPolicy(
  * DefaultPreemptionPolicy is the default preemption policy selected when
  * DYN_ALLOCATION_PREEMPTION_POLICY is not set. This policy was created with YARN's
  * PreemptionMessage symantics in mind. Instead of simply killing YARN's requested
- * containers, preemptively remove idle executors without cached data. If YARN requests
- * to preempt more executors than are idle, include the `askedToLeave` set and randomly
- * select executors to fill out the total preemption count.
+ * containers, the application master can chose another set of executors to preempt.
+ * In this case, the default policy sorts the executors by whether they have cached
+ * data and their [[removeTimes]] if possible. If an executor is not idle, set it to
+ * Long.MaxValue so it will be toward the end of the list.
+ *
+ * It is also important to note that other resource managers may have specific requirements
+ * to respond to their method of preemption. YARN does not have this requirement.
  */
 class DefaultPreemptionPolicy(
     executorIds: mutable.HashSet[String],
     removeTimes: mutable.HashMap[String, Long],
-    preemptedExecutors: mutable.HashSet[String]) extends
-  PreemptionPolicy(executorIds, removeTimes, preemptedExecutors) {
+    executorsToPreempt: mutable.HashSet[String]) extends
+  PreemptionPolicy(executorIds, removeTimes, executorsToPreempt) {
 
-  protected[spark] def orderByTimeout(
-      execMap: mutable.HashMap[String, Long],
-      numExecs: Int): Seq[String] = {
-    execMap.toSeq.sortBy(_._2).take(numExecs).map(_._1)
-  }
-
-  /**
-   * find executors to offer up for preemption
-   * favor most idle executors without cached data
-   * NOTE: does not consider non-idle executors
-   */
-  protected[spark] def findPreemptableExecutors(numExecsToKill: Int): Seq[String] = {
+  private def sortExecutorsByPreemptableness(
+      pe: PreemptExecutors): Seq[String] = {
     val blockMaster = SparkEnv.get.blockManager.master
-    val (execsWithCachedData, execsWithoutCachedData) = removeTimes
-      .partition { case (id, _) => blockMaster.hasCachedBlocks(id) }
-    if (execsWithoutCachedData.size < numExecsToKill) {
-      val execsLeftToKill = numExecsToKill - execsWithoutCachedData.size
-      execsWithoutCachedData.keys.toSeq ++
-        orderByTimeout(execsWithCachedData, execsLeftToKill)
-    } else orderByTimeout(execsWithoutCachedData, numExecsToKill)
+    executorIds.flatMap {
+      case id if pe.forcedToLeave.contains(id) => None
+      case id =>
+        Some((blockMaster.hasCachedBlocks(id), removeTimes.getOrElse(id, Long.MaxValue), id))
+    }.toSeq.sorted.map(_._3)
   }
 
   override def preemptExecutors(pe: PreemptExecutors): Unit = {
-    val numExecsToPreempt = pe.forcedToLeave.size + pe.numRequestedContainers
     val execsToPreempt = mutable.LinkedHashSet(pe.forcedToLeave.toSeq: _*)
     if (pe.numRequestedContainers > 0) {
-      execsToPreempt ++= findPreemptableExecutors(pe.numRequestedContainers)
-      execsToPreempt ++= pe.askedToLeave
-      val remaining = numExecsToPreempt - execsToPreempt.size
-      if (remaining > 0) execsToPreempt ++= scala.util.Random.shuffle(executorIds).take(remaining)
+      execsToPreempt ++= sortExecutorsByPreemptableness(pe).take(pe.numRequestedContainers)
     }
-
-    if (numExecsToPreempt > 0 && execsToPreempt.nonEmpty) {
-      preemptedExecutors ++= execsToPreempt.take(numExecsToPreempt)
+    if (execsToPreempt.nonEmpty) {
+      executorsToPreempt ++= execsToPreempt
     }
   }
 }
