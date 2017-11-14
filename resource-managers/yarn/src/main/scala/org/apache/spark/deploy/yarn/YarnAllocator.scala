@@ -477,8 +477,6 @@ private[yarn] class YarnAllocator(
 
   /**
    * Correlate the StrictPreemptionContract's containers with executors.
-   *
-   * NOTE: Add checkpoint configuration option?
    */
   private[yarn] def getForcefullyPreemptedExecutors(
       contract: StrictPreemptionContract): Set[String] = {

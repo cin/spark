@@ -116,6 +116,23 @@ private[spark] object CoarseGrainedClusterMessages {
 
   case class KillExecutors(executorIds: Seq[String]) extends CoarseGrainedClusterMessage
 
+  /**
+   * Abstraction of YARN's preemption message that can be used by other RM clients as well.
+   *
+   * @param forcedToLeave set of executors that should forcefully be removed. This is YARN
+   *                      specific but could be used by other RM clients to ensure this set
+   *                      of executors is removed.
+   * @param askedToLeave set of executors that the RM is requesting to be removed. In the case of
+   *                     YARN, the AM does not have to respect this set and can choose to preempt
+   *                     any set of executors it sees fit (as long as it matches the Resource
+   *                     Request, which in Spark's case are all executors because they all share
+   *                     the same CPU/memory settings.
+   * @param numRequestedContainers number of containers to preempt based on the Resource Request.
+   *                               This should equal the askedToLeave.size, but it doesn't
+   *                               necessarily have to. The default policy actually ignores the
+   *                               askedToLeave set completely and selects executors based on the
+   *                               presence of cached data and idle time.
+   */
   case class PreemptExecutors(
       forcedToLeave: Set[String],
       askedToLeave: Set[String],

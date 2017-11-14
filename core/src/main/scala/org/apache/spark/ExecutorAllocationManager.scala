@@ -157,13 +157,11 @@ private[spark] class ExecutorAllocationManager(
   // Metric source for ExecutorAllocationManager to expose internal status to MetricsSystem.
   val executorAllocationManagerSource = new ExecutorAllocationManagerSource
 
-  // Preemption policy state
-  // TODO: add a more descriptive message here
-  // be specific about access synchronization issues too
-  // access guarding
-  private[spark] val executorsToPreempt = new mutable.HashSet[String]
-  private val policy = PreemptionPolicy
-    .mkPolicy(conf, executorIds, removeTimes, executorsToPreempt)
+  // Preemption policy that determines which executors are selected for preemption.
+  // Be sure to protect access to the methods in the policy as they contain references to
+  // mutable objects, including a set of preemptable executors that is maintained within
+  // the policy.
+  private val preemptionPolicy = PreemptionPolicy.mkPolicy(conf, executorIds, removeTimes)
 
   // Whether we are still waiting for the initial set of executors to be allocated.
   // While this is true, we will not cancel outstanding executor requests. This is
@@ -265,7 +263,7 @@ private[spark] class ExecutorAllocationManager(
     numExecutorsTarget = initialNumExecutors
     executorsPendingToRemove.clear()
     removeTimes.clear()
-    executorsToPreempt.clear()
+    preemptionPolicy.clearExecutorsToPreempt()
   }
 
   /**
@@ -295,10 +293,10 @@ private[spark] class ExecutorAllocationManager(
 
     updateAndSyncNumExecutorsTarget(now)
 
-    // TODO: abstract this within the policy
+    val executorsToPreempt = preemptionPolicy.getExecutorsToPreempt
     if (executorsToPreempt.nonEmpty) {
       removeExecutors(executorsToPreempt.toSeq, forceKill = true)
-      executorsToPreempt.clear()
+      preemptionPolicy.clearExecutorsToPreempt()
     }
 
     val executorIdsToBeRemoved = ArrayBuffer[String]()
@@ -620,12 +618,13 @@ private[spark] class ExecutorAllocationManager(
    * This is currently only used by the YarnBackendScheduler, but other resource managers
    * could take advantage of this in the future.
    *
-   * Note that this method is synchronized as the policy may mutate [[executorsToPreempt]].
+   * Note that this method is synchronized as the policy depends on [[executorIds]]
+   * and [[removeTimes]].
    *
    * @param pe PreemptExecutors message
    */
   def preemptExecutors(pe: PreemptExecutors): Unit = synchronized {
-    policy.preemptExecutors(pe)
+    preemptionPolicy.preemptExecutors(pe)
   }
 
   /**

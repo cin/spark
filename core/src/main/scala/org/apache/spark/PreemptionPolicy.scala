@@ -35,18 +35,16 @@ object PreemptionPolicy {
       .classForName(conf.get(DYN_ALLOCATION_PREEMPTION_POLICY))
       .getConstructor(
         classOf[mutable.HashSet[String]],
-        classOf[mutable.HashMap[String, Long]],
-        classOf[mutable.HashSet[String]]
+        classOf[mutable.HashMap[String, Long]]]
       )
   }
 
   def mkPolicy(
       conf: SparkConf,
       executorIds: mutable.HashSet[String],
-      removeTimes: mutable.HashMap[String, Long],
-      preemptedExecutors: mutable.HashSet[String]): PreemptionPolicy = {
+      removeTimes: mutable.HashMap[String, Long]): PreemptionPolicy = {
     getCtor(conf)
-      .newInstance(executorIds, removeTimes, preemptedExecutors)
+      .newInstance(executorIds, removeTimes)
       .asInstanceOf[PreemptionPolicy]
   }
 }
@@ -57,14 +55,16 @@ object PreemptionPolicy {
  *
  * @param executorIds mutable collection of executorIds (not mutated by default)
  * @param removeTimes EAM's idle executor -> expiration map (not mutated by default)
- * @param executorsToPreempt mutable collection of executors to be preempted on the next
- *                           EAM update. preemptExecutors adds to this set, but EAM acts
- *                           on and clears the set
  */
 abstract class PreemptionPolicy(
     executorIds: mutable.HashSet[String],
-    removeTimes: mutable.HashMap[String, Long],
-    executorsToPreempt: mutable.HashSet[String]) {
+    removeTimes: mutable.HashMap[String, Long]) {
+
+  protected val executorsToPreempt = new mutable.HashSet[String]
+
+  def clearExecutorsToPreempt(): Unit = executorsToPreempt.clear()
+  def getExecutorsToPreempt: mutable.HashSet[String] = executorsToPreempt
+
   def preemptExecutors(pe: PreemptExecutors): Unit
 }
 
@@ -82,9 +82,8 @@ abstract class PreemptionPolicy(
  */
 class DefaultPreemptionPolicy(
     executorIds: mutable.HashSet[String],
-    removeTimes: mutable.HashMap[String, Long],
-    executorsToPreempt: mutable.HashSet[String]) extends
-  PreemptionPolicy(executorIds, removeTimes, executorsToPreempt) {
+    removeTimes: mutable.HashMap[String, Long]) extends
+  PreemptionPolicy(executorIds, removeTimes) {
 
   private def sortExecutorsByPreemptableness(
       pe: PreemptExecutors): Seq[String] = {
@@ -102,6 +101,7 @@ class DefaultPreemptionPolicy(
       execsToPreempt ++= sortExecutorsByPreemptableness(pe).take(pe.numRequestedContainers)
     }
     if (execsToPreempt.nonEmpty) {
+      executorsToPreempt.clear() // this should be empty but enforce it
       executorsToPreempt ++= execsToPreempt
     }
   }
