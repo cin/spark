@@ -35,7 +35,7 @@ object PreemptionPolicy {
       .classForName(conf.get(DYN_ALLOCATION_PREEMPTION_POLICY))
       .getConstructor(
         classOf[mutable.HashSet[String]],
-        classOf[mutable.HashMap[String, Long]]]
+        classOf[mutable.HashMap[String, Long]]
       )
   }
 
