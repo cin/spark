@@ -161,7 +161,7 @@ private[spark] class ExecutorAllocationManager(
   // Be sure to protect access to the methods in the policy as they contain references to
   // mutable objects, including a set of preemptable executors that is maintained within
   // the policy.
-  private val preemptionPolicy = PreemptionPolicy.mkPolicy(conf, executorIds, removeTimes)
+  private[spark] val preemptionPolicy = PreemptionPolicy.mkPolicy(conf, executorIds, removeTimes)
 
   // Whether we are still waiting for the initial set of executors to be allocated.
   // While this is true, we will not cancel outstanding executor requests. This is
