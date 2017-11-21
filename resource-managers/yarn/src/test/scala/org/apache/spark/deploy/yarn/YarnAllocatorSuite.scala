@@ -17,6 +17,8 @@
 
 package org.apache.spark.deploy.yarn
 
+import java.util.{List => JList, Set => JSet}
+
 import scala.collection.JavaConverters._
 
 import org.apache.hadoop.conf.Configuration
@@ -349,5 +351,146 @@ class YarnAllocatorSuite extends SparkFunSuite with Matchers with BeforeAndAfter
 
     clock.advance(50 * 1000L)
     handler.getNumExecutorsFailed should be (0)
+  }
+
+  private object PreemptionAllocator {
+    class TestPreemptionContract extends PreemptionContract {
+      private var containers = Set[PreemptionContainer]()
+      private var resourceRequests = List[PreemptionResourceRequest]()
+
+      override def getContainers: JSet[PreemptionContainer] = containers.asJava
+      override def getResourceRequest: JList[PreemptionResourceRequest] = resourceRequests.asJava
+
+      override def setContainers(containers: JSet[PreemptionContainer]): Unit =
+        this.containers = containers.asScala.toSet
+
+      override def setResourceRequest(req: JList[PreemptionResourceRequest]): Unit =
+        resourceRequests = req.asScala.toList
+    }
+
+    private class TestStrictPreemptionContract extends StrictPreemptionContract {
+      private var containers = Set[PreemptionContainer]()
+      override def getContainers: JSet[PreemptionContainer] = containers.asJava
+      override def setContainers(containers: JSet[PreemptionContainer]): Unit =
+        this.containers = containers.asScala.toSet
+    }
+
+    val numContainers = 4
+    val containerNames: Seq[String] = (1 to numContainers).map { i => s"host$i" }
+
+    val handler: YarnAllocator = createAllocator(numContainers)
+    handler.updateResourceRequests()
+
+    val containers: Seq[Container] = containerNames.map(createContainer)
+    handler.handleAllocatedContainers(containers)
+    handler.requestTotalExecutorsWithPreferredLocalities(numContainers, 0, Map.empty, Set.empty)
+
+    private val priority = Priority.newInstance(1)
+    private val resource = Resource.newInstance(2048, 1)
+
+    private def getExecutorIds(containerIds: Seq[ContainerId]): Set[String] = {
+      handler.executorIdToContainer
+        .filter { case (_, v) => containerIds.contains(v.getId) }
+        .keys
+        .toSet
+    }
+
+    def mkPreemptionResourceRequest(name: String): PreemptionResourceRequest = {
+      PreemptionResourceRequest.newInstance(
+        ResourceRequest.newInstance(priority, name, resource, 1))
+    }
+
+    def askedPreemptionTest(indexes: Seq[Int]): Unit = {
+      val containerIds = indexes.map { i => containers(i).getId }
+
+      val contract = new TestPreemptionContract
+      contract.setContainers(containerIds.map(PreemptionContainer.newInstance).toSet.asJava)
+      contract.setResourceRequest(
+        containerNames.map(mkPreemptionResourceRequest).take(indexes.size).asJava)
+
+      val executorIds = getExecutorIds(containerIds)
+      executorIds should have size indexes.size
+
+      val asked = handler.getAskedPreemptedExecutors(contract)
+      asked should have size indexes.size
+      asked shouldBe executorIds
+    }
+
+    def forcedPreemptionTest(indexes: Seq[Int]): Unit = {
+      val containerIds = indexes.map { i => containers(i).getId }
+
+      val contract = new TestStrictPreemptionContract
+      contract.setContainers(containerIds.map(PreemptionContainer.newInstance).toSet.asJava)
+
+      val executorIds = getExecutorIds(containerIds)
+      executorIds should have size indexes.size
+
+      val forced = handler.getForcefullyPreemptedExecutors(contract)
+      forced should have size indexes.size
+      forced shouldBe executorIds
+    }
+  }
+
+  import PreemptionAllocator.{askedPreemptionTest, forcedPreemptionTest}
+
+  test("getAskedPreemptedExecutors should work even when uninitialized") {
+    val numContainers = 4
+    val handler = createAllocator(numContainers)
+    handler.updateResourceRequests()
+
+    val contract = new PreemptionAllocator.TestPreemptionContract
+    val asked = handler.getAskedPreemptedExecutors(contract)
+    asked should have size 0
+  }
+
+  test("getAskedPreemptedExecutors should select a single container") {
+    Seq(0, 1, 2, 3).foreach { idx => askedPreemptionTest(Seq(idx)) }
+  }
+
+  test("getAskedPreemptedExecutors should select two containers") {
+    Seq(0, 1, 2, 3).permutations.map(_.take(2)).toSet.foreach { indexes: Seq[Int] =>
+      askedPreemptionTest(indexes)
+    }
+  }
+
+  test("getAskedPreemptedExecutors should select three containers") {
+    Seq(0, 1, 2, 3).permutations.map(_.take(3)).toSet.foreach { indexes: Seq[Int] =>
+      askedPreemptionTest(indexes)
+    }
+  }
+
+  test("getAskedPreemptedExecutors should select four containers") {
+    Seq(0, 1, 2, 3).permutations.foreach(askedPreemptionTest)
+  }
+
+  test("getAskedPreemptedExecutors should work with invalid containers") {
+    import PreemptionAllocator._
+    val contract = new TestPreemptionContract
+    val container = createContainer("host5")
+    val preemptionContainer = PreemptionContainer.newInstance(container.getId)
+    contract.setContainers(Set(preemptionContainer).asJava)
+    contract.setResourceRequest(Seq(mkPreemptionResourceRequest("host5")).asJava)
+    val asked = handler.getAskedPreemptedExecutors(contract)
+    asked should have size 0
+  }
+
+  test("getForcefullyPreemptedExecutors should work with a single container") {
+    Seq(0, 1, 2, 3).foreach { idx => forcedPreemptionTest(Seq(idx)) }
+  }
+
+  test("getForcefullyPreemptedExecutors should select two containers") {
+    Seq(0, 1, 2, 3).permutations.map(_.take(2)).toSet.foreach { indexes: Seq[Int] =>
+      forcedPreemptionTest(indexes)
+    }
+  }
+
+  test("getForcefullyPreemptedExecutors should select three containers") {
+    Seq(0, 1, 2, 3).permutations.map(_.take(3)).toSet.foreach { indexes: Seq[Int] =>
+      forcedPreemptionTest(indexes)
+    }
+  }
+
+  test("getForcefullyPreemptedExecutors should select four containers") {
+    Seq(0, 1, 2, 3).permutations.foreach(forcedPreemptionTest)
   }
 }

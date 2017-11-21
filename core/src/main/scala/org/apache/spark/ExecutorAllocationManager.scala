@@ -26,9 +26,10 @@ import scala.util.control.{ControlThrowable, NonFatal}
 import com.codahale.metrics.{Gauge, MetricRegistry}
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.internal.config.{DYN_ALLOCATION_MAX_EXECUTORS, DYN_ALLOCATION_MIN_EXECUTORS}
+import org.apache.spark.internal.config._
 import org.apache.spark.metrics.source.Source
 import org.apache.spark.scheduler._
+import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages.PreemptExecutors
 import org.apache.spark.util.{Clock, SystemClock, ThreadUtils, Utils}
 
 /**
@@ -130,7 +131,7 @@ private[spark] class ExecutorAllocationManager(
   private val executorsPendingToRemove = new mutable.HashSet[String]
 
   // All known executors
-  private val executorIds = new mutable.HashSet[String]
+  private[spark] val executorIds = new mutable.HashSet[String]
 
   // A timestamp of when an addition should be triggered, or NOT_SET if it is not set
   // This is set when pending tasks are added but not scheduled yet
@@ -138,7 +139,7 @@ private[spark] class ExecutorAllocationManager(
 
   // A timestamp for each executor of when the executor should be removed, indexed by the ID
   // This is set when an executor is no longer running a task, or when it first registers
-  private val removeTimes = new mutable.HashMap[String, Long]
+  private[spark] val removeTimes = new mutable.HashMap[String, Long]
 
   // Polling loop interval (ms)
   private val intervalMillis: Long = 100
@@ -155,6 +156,13 @@ private[spark] class ExecutorAllocationManager(
 
   // Metric source for ExecutorAllocationManager to expose internal status to MetricsSystem.
   val executorAllocationManagerSource = new ExecutorAllocationManagerSource
+
+  // Preemption policy that determines which executors are selected for preemption.
+  // Be sure to protect access to the methods in the policy as they contain references to
+  // mutable objects, including a set of preemptable executors that is maintained within
+  // the policy.
+  private[spark] val preemptionPolicy =
+    PreemptionPolicy.mkPolicy(conf, executorIds, removeTimes, removeExecutors)
 
   // Whether we are still waiting for the initial set of executors to be allocated.
   // While this is true, we will not cancel outstanding executor requests. This is
@@ -256,6 +264,7 @@ private[spark] class ExecutorAllocationManager(
     numExecutorsTarget = initialNumExecutors
     executorsPendingToRemove.clear()
     removeTimes.clear()
+    preemptionPolicy.foreach(_.clearExecutorsToPreempt())
   }
 
   /**
@@ -284,6 +293,8 @@ private[spark] class ExecutorAllocationManager(
     val now = clock.getTimeMillis
 
     updateAndSyncNumExecutorsTarget(now)
+
+    preemptionPolicy.foreach(_.preemptExecutors())
 
     val executorIdsToBeRemoved = ArrayBuffer[String]()
     removeTimes.retain { case (executorId, expireTime) =>
@@ -420,7 +431,9 @@ private[spark] class ExecutorAllocationManager(
    * Request the cluster manager to remove the given executors.
    * Returns the list of executors which are removed.
    */
-  private def removeExecutors(executors: Seq[String]): Seq[String] = synchronized {
+  private[spark] def removeExecutors(
+      executors: Seq[String],
+      forceKill: Boolean = false): Seq[String] = synchronized {
     val executorIdsToBeRemoved = new ArrayBuffer[String]
 
     logInfo("Request to remove executorIds: " + executors.mkString(", "))
@@ -428,10 +441,10 @@ private[spark] class ExecutorAllocationManager(
 
     var newExecutorTotal = numExistingExecutors
     executors.foreach { executorIdToBeRemoved =>
-      if (newExecutorTotal - 1 < minNumExecutors) {
+      if (!forceKill && newExecutorTotal - 1 < minNumExecutors) {
         logDebug(s"Not removing idle executor $executorIdToBeRemoved because there are only " +
           s"$newExecutorTotal executor(s) left (minimum number of executor limit $minNumExecutors)")
-      } else if (newExecutorTotal - 1 < numExecutorsTarget) {
+      } else if (!forceKill && newExecutorTotal - 1 < numExecutorsTarget) {
         logDebug(s"Not removing idle executor $executorIdToBeRemoved because there are only " +
           s"$newExecutorTotal executor(s) left (number of executor target $numExecutorsTarget)")
       } else if (canBeKilled(executorIdToBeRemoved)) {
@@ -448,7 +461,7 @@ private[spark] class ExecutorAllocationManager(
     val executorsRemoved = if (testing) {
       executorIdsToBeRemoved
     } else {
-      client.killExecutors(executorIdsToBeRemoved)
+      client.killExecutors(executorIdsToBeRemoved, force = forceKill)
     }
     // [SPARK-21834] killExecutors api reduces the target number of executors.
     // So we need to update the target with desired value.
@@ -595,6 +608,20 @@ private[spark] class ExecutorAllocationManager(
   private def onExecutorBusy(executorId: String): Unit = synchronized {
     logDebug(s"Clearing idle timer for $executorId because it is now running a task")
     removeTimes.remove(executorId)
+  }
+
+  /**
+   * Callback invoked by the scheduler backend when a preemption message is received.
+   * This is currently only used by the YarnBackendScheduler, but other resource managers
+   * could take advantage of this in the future.
+   *
+   * Note that this method is synchronized as the policy depends on [[executorIds]]
+   * and [[removeTimes]].
+   *
+   * @param pe PreemptExecutors message
+   */
+  def handlePreemptExecutorsMessage(pe: PreemptExecutors): Unit = synchronized {
+    preemptionPolicy.foreach(_.legislate(pe))
   }
 
   /**

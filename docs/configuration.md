@@ -1743,6 +1743,14 @@ Apart from these, the following properties are also available, and may be useful
     <a href="job-scheduling.html#resource-allocation-policy">description</a>.
   </td>
 </tr>
+<tr>
+  <td><code>spark.dynamicAllocation.preemption.policy</code></td>
+  <td><code>org.apache.spark.DefaultPreemptionPolicy</code></td>
+  <td>
+    Preemption policy to use when selecting executors for removal when a PreemptionMessage
+    is received. This should be the fully qualified classname to the policy.
+  </td>
+</tr>
 </table>
 
 ### Security
