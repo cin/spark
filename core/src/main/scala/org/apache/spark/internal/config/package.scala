@@ -105,6 +105,13 @@ package object config {
   private[spark] val DYN_ALLOCATION_PREEMPTION_POLICY_DEFAULT =
     "org.apache.spark.DefaultPreemptionPolicy"
 
+  private[spark] val DYN_ALLOCATION_PREEMPTION_POLICY_ENABLED =
+    ConfigBuilder("spark.dynamicAllocation.preemption.policy.enabled")
+      .doc("Enable the preemption policy logic specify by " +
+        "`spark.dynamicAllocation.preemption.policy`.")
+      .booleanConf
+      .createWithDefault(false)
+
   private[spark] val DYN_ALLOCATION_PREEMPTION_POLICY =
     ConfigBuilder("spark.dynamicAllocation.preemption.policy")
       .doc("Fully qualified classname for preemption policy.")

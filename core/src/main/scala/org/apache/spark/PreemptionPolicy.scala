@@ -22,7 +22,8 @@ import java.lang.reflect.Constructor
 import scala.collection.mutable
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.internal.config.DYN_ALLOCATION_PREEMPTION_POLICY
+import org.apache.spark.internal.config.{
+  DYN_ALLOCATION_PREEMPTION_POLICY, DYN_ALLOCATION_PREEMPTION_POLICY_ENABLED}
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages.PreemptExecutors
 import org.apache.spark.util.Utils
 
@@ -45,10 +46,12 @@ object PreemptionPolicy {
       conf: SparkConf,
       executorIds: mutable.HashSet[String],
       removeTimes: mutable.HashMap[String, Long],
-      removeExecutorsFn: (Seq[String], Boolean) => Seq[String]): PreemptionPolicy = {
-    getCtor(conf)
-      .newInstance(executorIds, removeTimes, removeExecutorsFn)
-      .asInstanceOf[PreemptionPolicy]
+      removeExecutorsFn: (Seq[String], Boolean) => Seq[String]): Option[PreemptionPolicy] = {
+    if (conf.get(DYN_ALLOCATION_PREEMPTION_POLICY_ENABLED)) {
+      Some(getCtor(conf)
+        .newInstance(executorIds, removeTimes, removeExecutorsFn)
+        .asInstanceOf[PreemptionPolicy])
+    } else None
   }
 }
 

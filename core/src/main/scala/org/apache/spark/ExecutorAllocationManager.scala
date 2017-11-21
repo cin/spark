@@ -264,7 +264,7 @@ private[spark] class ExecutorAllocationManager(
     numExecutorsTarget = initialNumExecutors
     executorsPendingToRemove.clear()
     removeTimes.clear()
-    preemptionPolicy.clearExecutorsToPreempt()
+    preemptionPolicy.foreach(_.clearExecutorsToPreempt())
   }
 
   /**
@@ -294,7 +294,7 @@ private[spark] class ExecutorAllocationManager(
 
     updateAndSyncNumExecutorsTarget(now)
 
-    preemptionPolicy.preemptExecutors()
+    preemptionPolicy.foreach(_.preemptExecutors())
 
     val executorIdsToBeRemoved = ArrayBuffer[String]()
     removeTimes.retain { case (executorId, expireTime) =>
@@ -621,7 +621,7 @@ private[spark] class ExecutorAllocationManager(
    * @param pe PreemptExecutors message
    */
   def handlePreemptExecutorsMessage(pe: PreemptExecutors): Unit = synchronized {
-    preemptionPolicy.legislate(pe)
+    preemptionPolicy.foreach(_.legislate(pe))
   }
 
   /**
