@@ -56,8 +56,8 @@ object PreemptionPolicy {
 }
 
 /**
- * The preemptExecutors method is synchronized in the ExecutorAllocationManager (EAM),
- * so it's not necessary here. But still...beware.
+ * The preemptExecutors method is synchronized in order to protect against changes
+ * to the ExecutorAllocationManager codebase.
  *
  * @param executorIds mutable collection of executorIds (not mutated by default)
  * @param removeTimes EAM's idle executor -> expiration map (not mutated by default)
@@ -74,9 +74,11 @@ abstract class PreemptionPolicy(
   }
 
   def preemptExecutors(): Unit = synchronized {
-    logInfo(s"Preempting executors $executorsToPreempt")
-    removeExecutorsFn(executorsToPreempt.toSeq, true)
-    executorsToPreempt.clear()
+    if (executorsToPreempt.nonEmpty) {
+      logInfo(s"Preempting executors $executorsToPreempt")
+      removeExecutorsFn(executorsToPreempt.toSeq, true)
+      executorsToPreempt.clear()
+    }
   }
 
   def legislate(pe: PreemptExecutors): Unit
@@ -139,7 +141,7 @@ class DefaultPreemptionPolicy(
   }
 
   override def legislate(pe: PreemptExecutors): Unit = synchronized {
-    executorsToPreempt.clear() // this should be empty but enforce it
+    executorsToPreempt.clear()
     if (pe.forcedToLeave.nonEmpty) executorsToPreempt ++= pe.forcedToLeave
     val numExecutorsAskedToLeave = pe.askedToLeave.size
     if (numExecutorsAskedToLeave > 0) {

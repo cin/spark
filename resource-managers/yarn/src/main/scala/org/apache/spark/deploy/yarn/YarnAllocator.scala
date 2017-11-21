@@ -456,23 +456,13 @@ private[yarn] class YarnAllocator(
   }
 
   /**
-   * Correlate the PreemptionContract's containers with executors and calculate the number of
-   * containers the resource request is asking to be preempted.
+   * Correlate the PreemptionContract's containers with executors.
    */
-  private[yarn] def getAskedPreemptedExecutors(
-      contract: PreemptionContract): (Set[String], Int) = {
+  private[yarn] def getAskedPreemptedExecutors(contract: PreemptionContract): Set[String] = {
     val containers = contract.getContainers.asScala.toSet
     val askedToLeave = containers.flatMap { c => containerIdToExecutorId.get(c.getId) }
-
-    // since all executors share to same memory and cores settings,
-    // only the number of containers matters
-    val numRequestedPreempted = contract.getResourceRequest.asScala.foldLeft(0) { case (acc, r) =>
-      acc + r.getResourceRequest.getNumContainers
-    }
-
-    logInfo(s"$askedToLeave requested to be preempted. " +
-      s"numRequestedPreempted: $numRequestedPreempted")
-    (askedToLeave, numRequestedPreempted)
+    logInfo(s"$askedToLeave requested to be preempted.")
+    askedToLeave
   }
 
   /**
@@ -497,17 +487,16 @@ private[yarn] class YarnAllocator(
    */
   private def handlePreemptionMessage(allocateResponse: AllocateResponse): Unit = {
     Option(allocateResponse.getPreemptionMessage).foreach { preemptionMessage =>
-      val (askedToLeave, numRequestedPreempted): (Set[String], Int) =
-        Option(preemptionMessage.getContract)
-          .map(getAskedPreemptedExecutors)
-          .getOrElse((Set.empty, 0))
+      val askedToLeave = Option(preemptionMessage.getContract)
+        .map(getAskedPreemptedExecutors)
+        .getOrElse(Set.empty)
 
       val forcedToLeave = Option(preemptionMessage.getStrictContract)
         .map(getForcefullyPreemptedExecutors)
         .getOrElse(Set.empty)
 
-      if (numRequestedPreempted > 0 || askedToLeave.nonEmpty || forcedToLeave.nonEmpty) {
-        driverRef.send(PreemptExecutors(forcedToLeave, askedToLeave, numRequestedPreempted))
+      if (askedToLeave.nonEmpty || forcedToLeave.nonEmpty) {
+        driverRef.send(PreemptExecutors(forcedToLeave, askedToLeave))
       }
     }
   }

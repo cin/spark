@@ -39,6 +39,7 @@ class PreemptionPolicySuite extends SparkFunSuite
       .set("spark.dynamicAllocation.minExecutors", minExecutors.toString)
       .set("spark.dynamicAllocation.maxExecutors", maxExecutors.toString)
       .set("spark.dynamicAllocation.initialExecutors", initialExecutors.toString)
+      .set("spark.dynamicAllocation.preemption.policy.enabled", "true")
       .set("spark.dynamicAllocation.testing", "true")
     new SparkContext(conf)
   }
@@ -51,11 +52,14 @@ class PreemptionPolicySuite extends SparkFunSuite
     val conf = new SparkConf()
       .setMaster("myDummyLocalExternalClusterManager")
       .setAppName("test-executor-allocation-manager")
+      .set("spark.dynamicAllocation.enabled", "true")
+      .set("spark.dynamicAllocation.preemption.policy.enabled", "true")
+      .set("spark.dynamicAllocation.testing", "true")
     val policy = PreemptionPolicy.mkPolicy(conf, executorIds, removeTimes,
       sc.executorAllocationManager.get.removeExecutors).get
 
     policy should not be null
-    val pe = PreemptExecutors(Set.empty, Set.empty, 0)
+    val pe = PreemptExecutors(Set.empty, Set.empty)
     policy.legislate(pe)
     preemptedExecutors should have size 0
   }
@@ -66,11 +70,14 @@ class PreemptionPolicySuite extends SparkFunSuite
     val numExecs = 2
     eam.executorIds ++= scala.util.Random.shuffle((0 until 4).map(_.toString))
     val rmex = scala.util.Random.shuffle(eam.executorIds).take(numExecs).toSet
-    val pe = PreemptExecutors(rmex, Set.empty, 0)
+    val pe = PreemptExecutors(rmex, Set.empty)
     eam.handlePreemptExecutorsMessage(pe)
-    eam.preemptionPolicy.get.executorsToPreempt should have size numExecs
-    eam.preemptionPolicy.get.executorsToPreempt.foreach { pe =>
-      rmex should contain (pe)
+    eam.preemptionPolicy shouldBe defined
+    eam.preemptionPolicy.foreach { preemptionPolicy =>
+      preemptionPolicy.executorsToPreempt should have size numExecs
+      preemptionPolicy.executorsToPreempt.foreach { pe =>
+        rmex should contain(pe)
+      }
     }
   }
 
@@ -82,11 +89,14 @@ class PreemptionPolicySuite extends SparkFunSuite
     // the default policy will sort executors for removal based on cached data, idle time, and id
     // in this case, since the executors have no cached data and are not idle, the id will be used
     val rmex = eam.executorIds.toList.sorted.take(numExecs).toSet
-    val pem = PreemptExecutors(Set.empty, rmex, numExecs)
+    val pem = PreemptExecutors(Set.empty, rmex)
     eam.handlePreemptExecutorsMessage(pem)
-    eam.preemptionPolicy.get.executorsToPreempt should have size numExecs
-    eam.preemptionPolicy.get.executorsToPreempt.foreach { pe =>
-      rmex should contain (pe)
+    eam.preemptionPolicy shouldBe defined
+    eam.preemptionPolicy.foreach { preemptionPolicy =>
+      preemptionPolicy.executorsToPreempt should have size numExecs
+      preemptionPolicy.executorsToPreempt.foreach { pe =>
+        rmex should contain(pe)
+      }
     }
   }
 
@@ -99,10 +109,13 @@ class PreemptionPolicySuite extends SparkFunSuite
     val expected2 = eam.executorIds.toList.filterNot(_ == expected1).min
     eam.removeTimes(expected1) = System.currentTimeMillis + 1000L
     val rmex = scala.util.Random.shuffle(eam.executorIds).take(numExecs).toSet
-    val pe = PreemptExecutors(Set.empty, rmex, 2)
+    val pe = PreemptExecutors(Set.empty, rmex)
     eam.handlePreemptExecutorsMessage(pe)
-    eam.preemptionPolicy.get.executorsToPreempt should have size 2
-    eam.preemptionPolicy.get.executorsToPreempt shouldBe Set(expected1, expected2)
+    eam.preemptionPolicy shouldBe defined
+    eam.preemptionPolicy.foreach { preemptionPolicy =>
+      preemptionPolicy.executorsToPreempt should have size numExecs
+      preemptionPolicy.executorsToPreempt shouldBe Set(expected1, expected2)
+    }
   }
 
 
@@ -117,31 +130,15 @@ class PreemptionPolicySuite extends SparkFunSuite
     eam.removeTimes(expected2) = System.currentTimeMillis + 2000L
     eam.removeTimes(expected3) = System.currentTimeMillis + 1000L
     val rmex = scala.util.Random.shuffle(eam.executorIds).take(numExecs).toSet
-    val pe = PreemptExecutors(Set.empty, rmex, 3)
+    val pe = PreemptExecutors(Set.empty, rmex)
     eam.handlePreemptExecutorsMessage(pe)
-    eam.preemptionPolicy.get.executorsToPreempt should have size 3
-    eam.preemptionPolicy.get.executorsToPreempt should contain (expected2)
-    eam.preemptionPolicy.get.executorsToPreempt should contain (expected3)
-    val expected4 = eam.executorIds.toList.filterNot(Set(expected2, expected3).contains).min
-    eam.preemptionPolicy.get.executorsToPreempt should contain (expected4)
-  }
-
-  test("preemption selection with no asked removal and idle execs") {
-    sc.executorAllocationManager shouldBe defined
-    val eam = sc.executorAllocationManager.get
-    val numExecs = 2
-    eam.executorIds ++= scala.util.Random.shuffle((0 until 4).map(_.toString))
-    val idleExecs = new mutable.HashSet[String]
-    eam.executorIds.takeRight(numExecs).foreach { eid =>
-      eam.removeTimes(eid) = System.currentTimeMillis + 1000L
-      idleExecs.add(eid)
-    }
-
-    val pe = PreemptExecutors(Set.empty, Set.empty, numExecs)
-    eam.handlePreemptExecutorsMessage(pe)
-    eam.preemptionPolicy.get.executorsToPreempt should have size numExecs
-    eam.preemptionPolicy.get.executorsToPreempt.foreach { eid =>
-      idleExecs should contain (eid)
+    eam.preemptionPolicy shouldBe defined
+    eam.preemptionPolicy.foreach { preemptionPolicy =>
+      preemptionPolicy.executorsToPreempt should have size numExecs
+      preemptionPolicy.executorsToPreempt should contain(expected2)
+      preemptionPolicy.executorsToPreempt should contain(expected3)
+      val expected4 = eam.executorIds.toList.filterNot(Set(expected2, expected3).contains).min
+      preemptionPolicy.executorsToPreempt should contain(expected4)
     }
   }
 }

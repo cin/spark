@@ -127,16 +127,10 @@ private[spark] object CoarseGrainedClusterMessages {
    *                     any set of executors it sees fit (as long as it matches the Resource
    *                     Request, which in Spark's case are all executors because they all share
    *                     the same CPU/memory settings.
-   * @param numRequestedContainers number of containers to preempt based on the Resource Request.
-   *                               This should equal the askedToLeave.size, but it doesn't
-   *                               necessarily have to. The default policy actually ignores the
-   *                               askedToLeave set completely and selects executors based on the
-   *                               presence of cached data and idle time.
    */
   case class PreemptExecutors(
       forcedToLeave: Set[String],
-      askedToLeave: Set[String],
-      numRequestedContainers: Int)
+      askedToLeave: Set[String])
     extends CoarseGrainedClusterMessage
 
   // Used internally by executors to shut themselves down.

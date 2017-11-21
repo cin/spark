@@ -411,10 +411,9 @@ class YarnAllocatorSuite extends SparkFunSuite with Matchers with BeforeAndAfter
       val executorIds = getExecutorIds(containerIds)
       executorIds should have size indexes.size
 
-      val (asked, numRequested) = handler.getAskedPreemptedExecutors(contract)
+      val asked = handler.getAskedPreemptedExecutors(contract)
       asked should have size indexes.size
       asked shouldBe executorIds
-      numRequested shouldBe indexes.size
     }
 
     def forcedPreemptionTest(indexes: Seq[Int]): Unit = {
@@ -440,9 +439,8 @@ class YarnAllocatorSuite extends SparkFunSuite with Matchers with BeforeAndAfter
     handler.updateResourceRequests()
 
     val contract = new PreemptionAllocator.TestPreemptionContract
-    val (asked, numRequested) = handler.getAskedPreemptedExecutors(contract)
+    val asked = handler.getAskedPreemptedExecutors(contract)
     asked should have size 0
-    numRequested shouldBe 0
   }
 
   test("getAskedPreemptedExecutors should select a single container") {
@@ -472,9 +470,8 @@ class YarnAllocatorSuite extends SparkFunSuite with Matchers with BeforeAndAfter
     val preemptionContainer = PreemptionContainer.newInstance(container.getId)
     contract.setContainers(Set(preemptionContainer).asJava)
     contract.setResourceRequest(Seq(mkPreemptionResourceRequest("host5")).asJava)
-    val (asked, numRequested) = handler.getAskedPreemptedExecutors(contract)
+    val asked = handler.getAskedPreemptedExecutors(contract)
     asked should have size 0
-    numRequested shouldBe 1
   }
 
   test("getForcefullyPreemptedExecutors should work with a single container") {
