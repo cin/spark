@@ -272,7 +272,8 @@ private[spark] abstract class YarnSchedulerBackend(
               s" $executorId for reason $reason", e)
         }(ThreadUtils.sameThread)
 
-      case pe: PreemptExecutors => sc.executorAllocationManager.foreach(_.preemptExecutors(pe))
+      case pe: PreemptExecutors =>
+        sc.executorAllocationManager.foreach(_.handlePreemptExecutorsMessage(pe))
     }
 
 

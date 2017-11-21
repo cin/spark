@@ -21,6 +21,7 @@ import java.lang.reflect.Constructor
 
 import scala.collection.mutable
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.DYN_ALLOCATION_PREEMPTION_POLICY
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages.PreemptExecutors
 import org.apache.spark.util.Utils
@@ -35,16 +36,18 @@ object PreemptionPolicy {
       .classForName(conf.get(DYN_ALLOCATION_PREEMPTION_POLICY))
       .getConstructor(
         classOf[mutable.HashSet[String]],
-        classOf[mutable.HashMap[String, Long]]
+        classOf[mutable.HashMap[String, Long]],
+        classOf[(Seq[String], Boolean) => Seq[String]]
       )
   }
 
   def mkPolicy(
       conf: SparkConf,
       executorIds: mutable.HashSet[String],
-      removeTimes: mutable.HashMap[String, Long]): PreemptionPolicy = {
+      removeTimes: mutable.HashMap[String, Long],
+      removeExecutorsFn: (Seq[String], Boolean) => Seq[String]): PreemptionPolicy = {
     getCtor(conf)
-      .newInstance(executorIds, removeTimes)
+      .newInstance(executorIds, removeTimes, removeExecutorsFn)
       .asInstanceOf[PreemptionPolicy]
   }
 }
@@ -58,14 +61,51 @@ object PreemptionPolicy {
  */
 abstract class PreemptionPolicy(
     executorIds: mutable.HashSet[String],
-    removeTimes: mutable.HashMap[String, Long]) {
+    removeTimes: mutable.HashMap[String, Long],
+    removeExecutorsFn: (Seq[String], Boolean) => Seq[String]) extends Logging {
 
-  protected val executorsToPreempt = new mutable.HashSet[String]
+  protected[spark] val executorsToPreempt = new mutable.HashSet[String]
 
-  def clearExecutorsToPreempt(): Unit = executorsToPreempt.clear()
-  def getExecutorsToPreempt: mutable.HashSet[String] = executorsToPreempt
+  def clearExecutorsToPreempt(): Unit = synchronized {
+    executorsToPreempt.clear()
+  }
 
-  def preemptExecutors(pe: PreemptExecutors): Unit
+  def preemptExecutors(): Unit = synchronized {
+    logInfo(s"Preempting executors $executorsToPreempt")
+    removeExecutorsFn(executorsToPreempt.toSeq, true)
+    executorsToPreempt.clear()
+  }
+
+  def legislate(pe: PreemptExecutors): Unit
+}
+
+/**
+ * NoPreemptionPolicy doesn't do anything. Mainly for testing.
+ */
+class NoPreemptionPolicy(
+    executorIds: mutable.HashSet[String],
+    removeTimes: mutable.HashMap[String, Long],
+    removeExecutorsFn: (Seq[String], Boolean) => Seq[String]) extends
+  PreemptionPolicy(executorIds, removeTimes, removeExecutorsFn) {
+
+  override def legislate(pe: PreemptExecutors): Unit = {}
+}
+
+/**
+ * SimplePreemptionPolicy simply sets [[PreemptionPolicy.executorsToPreempt]] to the set of
+ * executors specifed by the PreemptExecutors message.
+ */
+class SimplePreemptionPolicy(
+    executorIds: mutable.HashSet[String],
+    removeTimes: mutable.HashMap[String, Long],
+    removeExecutorsFn: (Seq[String], Boolean) => Seq[String]) extends
+  PreemptionPolicy(executorIds, removeTimes, removeExecutorsFn) {
+
+  override def legislate(pe: PreemptExecutors): Unit = synchronized {
+    executorsToPreempt.clear()
+    if (pe.forcedToLeave.nonEmpty) executorsToPreempt ++= pe.forcedToLeave
+    if (pe.askedToLeave.nonEmpty) executorsToPreempt ++= pe.askedToLeave
+  }
 }
 
 /**
@@ -82,11 +122,11 @@ abstract class PreemptionPolicy(
  */
 class DefaultPreemptionPolicy(
     executorIds: mutable.HashSet[String],
-    removeTimes: mutable.HashMap[String, Long]) extends
-  PreemptionPolicy(executorIds, removeTimes) {
+    removeTimes: mutable.HashMap[String, Long],
+    removeExecutorsFn: (Seq[String], Boolean) => Seq[String]) extends
+  PreemptionPolicy(executorIds, removeTimes, removeExecutorsFn) {
 
-  private def sortExecutorsByPreemptableness(
-      pe: PreemptExecutors): Seq[String] = {
+  private def sortExecutorsByPreemptableness(pe: PreemptExecutors): Seq[String] = {
     val blockMaster = SparkEnv.get.blockManager.master
     executorIds.flatMap {
       case id if pe.forcedToLeave.contains(id) => None
@@ -95,14 +135,12 @@ class DefaultPreemptionPolicy(
     }.toSeq.sorted.map(_._3)
   }
 
-  override def preemptExecutors(pe: PreemptExecutors): Unit = {
-    val execsToPreempt = mutable.LinkedHashSet(pe.forcedToLeave.toSeq: _*)
-    if (pe.numRequestedContainers > 0) {
-      execsToPreempt ++= sortExecutorsByPreemptableness(pe).take(pe.numRequestedContainers)
-    }
-    if (execsToPreempt.nonEmpty) {
-      executorsToPreempt.clear() // this should be empty but enforce it
-      executorsToPreempt ++= execsToPreempt
+  override def legislate(pe: PreemptExecutors): Unit = synchronized {
+    executorsToPreempt.clear() // this should be empty but enforce it
+    if (pe.forcedToLeave.nonEmpty) executorsToPreempt ++= pe.forcedToLeave
+    val numExecutorsAskedToLeave = pe.askedToLeave.size
+    if (numExecutorsAskedToLeave > 0) {
+      executorsToPreempt ++= sortExecutorsByPreemptableness(pe).take(numExecutorsAskedToLeave)
     }
   }
 }
